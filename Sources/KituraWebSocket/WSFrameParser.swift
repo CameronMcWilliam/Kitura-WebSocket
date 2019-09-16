@@ -45,7 +45,7 @@ struct WSFrameParser {
     mutating func parse(_ buffer: NSData, from: Int) -> (Bool, WebSocketError?, Int) {
         var bytesParsed = 0
         var byteIndex = from
-        let bytes = buffer.bytes.assumingMemoryBound(to: UInt8.self)
+        let bytes = UnsafeRawBufferPointer(start: buffer.bytes, count: buffer.length)
         
         let length = buffer.length
         
@@ -79,7 +79,7 @@ struct WSFrameParser {
         return (payloadLength == frame.payload.length, nil, bytesParsed)
     }
     
-    private mutating func parseOpCode(bytes: UnsafePointer<UInt8>, from: Int) -> (WebSocketError?, Int) {
+    private mutating func parseOpCode(bytes: UnsafeRawBufferPointer, from: Int) -> (WebSocketError?, Int) {
         let byte = bytes[from]
         // 0x.. is the hexadecimal representation of the bits you would like to check
         // e.g.0x0f is 15 which is 00001111 so rawOpCode is the last 4 digits
@@ -100,7 +100,7 @@ struct WSFrameParser {
         }
     }
     
-    private mutating func parseMaskAndLength(bytes: UnsafePointer<UInt8>, from: Int, length: Int) -> (WebSocketError?, Int) {
+    private mutating func parseMaskAndLength(bytes: UnsafeRawBufferPointer, from: Int, length: Int) -> (WebSocketError?, Int) {
         let byte = bytes[from]
         masked = byte & 0x80 != 0
         
@@ -112,7 +112,7 @@ struct WSFrameParser {
         switch lengthByte {
         case 126:
             if length - from >= 3 {
-                let networkOrderedUInt16 = UnsafeRawPointer(bytes+from+1).assumingMemoryBound(to: UInt16.self)[0]
+                let networkOrderedUInt16 = bytes.load(fromByteOffset: from+1, as: UInt16.self)
                 
                 #if os(Linux)
                     payloadLength = Int(Glibc.ntohs(networkOrderedUInt16))
@@ -123,7 +123,7 @@ struct WSFrameParser {
             }
         case 127:
             if length - from >= 9 {
-                let networkOrderedUInt32 = UnsafeRawPointer(bytes+from+5).assumingMemoryBound(to: UInt32.self)[0]
+                let networkOrderedUInt32 = bytes.load(fromByteOffset: from+1, as: UInt32.self)
                 
                 #if os(Linux)
                     payloadLength = Int(Glibc.ntohl(networkOrderedUInt32))
@@ -141,9 +141,9 @@ struct WSFrameParser {
         if bytesConsumed > 0 {
             if length - from - bytesConsumed >= maskSize {
                 #if swift(>=4.1)
-                    UnsafeMutableRawPointer(mutating: mask).copyMemory(from: bytes+from+bytesConsumed, byteCount: maskSize)
+                    UnsafeMutableRawPointer(mutating: mask).copyMemory(from: bytes.load(fromByteOffset: from+1+bytesConsumed, as: [UInt8].self), byteCount: maskSize)
                 #else
-                    UnsafeMutableRawPointer(mutating: mask).copyBytes(from: bytes+from+bytesConsumed, count: maskSize)
+                    UnsafeMutableRawPointer(mutating: mask).copyBytes(from: bytes+from+1+bytesConsumed, count: maskSize)
                 #endif
                 bytesConsumed += maskSize
             }
@@ -155,8 +155,8 @@ struct WSFrameParser {
         return (nil, bytesConsumed)
     }
     
-    private mutating func parsePayload(bytes: UnsafePointer<UInt8>, from: Int, length: Int) -> Int {
-        let payloadPiece = bytes + from
+    private mutating func parsePayload(bytes: UnsafeRawBufferPointer, from: Int, length: Int) -> Int {
+        let payloadPiece = bytes.load(fromByteOffset: from+1, as: [UInt8].self)
         var unmaskedBytes = [UInt8](repeating: 0, count: 125)
         var bytesConsumed: Int = 0
         

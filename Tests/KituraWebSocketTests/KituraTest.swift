@@ -26,40 +26,40 @@ import Foundation
 import Dispatch
 
 class KituraTest: XCTestCase {
-    
+
     private static let initOnce: () = {
         PrintLogger.use(colored: true)
     }()
-    
+
     override func setUp() {
         super.setUp()
         KituraTest.initOnce
     }
-    
+
     private var wsGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-    
+
     var secWebKey = "test"
-    
+
     // Note: These two paths must only differ by the leading slash
     let servicePathNoSlash = "wstester"
     let servicePath = "/wstester"
-    
+
     func performServerTest(line: Int = #line,
                            asyncTasks: (XCTestExpectation) -> Void...) {
         let server = HTTP.createServer()
-        
+
         do {
             try server.listen(on: 8080)
-        
+
             let requestQueue = DispatchQueue(label: "Request queue")
-        
+
             for (index, asyncTask) in asyncTasks.enumerated() {
                 let expectation = self.expectation(line: line, index: index)
                 requestQueue.async() {
                     asyncTask(expectation)
                 }
             }
-        
+
             waitForExpectations(timeout: 10) { error in
                 // blocks test until request completes
                 server.stop()
@@ -70,65 +70,63 @@ class KituraTest: XCTestCase {
             XCTFail("Test failed. Error=\(error)")
         }
     }
-    
+
     func performTest(framesToSend: [(Bool, Int, NSData)],
                      expectedFrames: [(Bool, Int, NSData)], expectation: XCTestExpectation) {
         guard let socket = sendUpgradeRequest(toPath: servicePath, usingKey: secWebKey) else { return }
-        
+
         let buffer = checkUpgradeResponse(from: socket, forKey: secWebKey)
-        
+
         for frameToSend in framesToSend {
             let (finalToSend, opCodeToSend, payloadToSend) = frameToSend
             sendFrame(final: finalToSend, withOpcode: opCodeToSend, withPayload: payloadToSend, on: socket)
         }
-        
+
         var position = 0
         for expectedFrame in expectedFrames {
             let (final, opCode, payload, updatedPosition) = parseFrame(using: buffer, position: position, from: socket)
             position = updatedPosition
-        
+
             let (expectedFinal, expectedOpCode, expectedPayload) = expectedFrame
             XCTAssertEqual(final, expectedFinal, "Expected message was\(expectedFinal ? "n't" : "") final")
             XCTAssertEqual(opCode, expectedOpCode, "Opcode wasn't \(expectedOpCode). It was \(opCode)")
             XCTAssertEqual(expectedPayload, payload, "The payload [\(payload)] doesn't equal the expected [\(expectedPayload)]")
         }
-        
+
         // Close the socket abruptly. Need to wait to let the close percolate up on the other side
         socket.close()
         usleep(150)
-        
+
         expectation.fulfill()
     }
-    
-    @discardableResult
-    func register(onPath: String? = nil, closeReason: WebSocketCloseReasonCode, testServerRequest: Bool = false, pingMessage: String? = nil, connectionTimeout: Int? = nil) -> TestWebSocketService {
-        let service = TestWebSocketService(closeReason: closeReason, testServerRequest: testServerRequest, pingMessage: pingMessage, connectionTimeout: connectionTimeout)
+
+    func register(onPath: String? = nil, closeReason: WebSocketCloseReasonCode, testServerRequest: Bool = false, pingMessage: String? = nil) {
+        let service = TestWebSocketService(closeReason: closeReason, testServerRequest: testServerRequest, pingMessage: pingMessage)
         WebSocket.register(service: service, onPath: onPath ?? servicePath)
-        return service
     }
-    
+
     func sendUpgradeRequest(forProtocolVersion: String? = "13", toPath: String, usingKey: String?) -> Socket? {
         var socket: Socket?
         do {
             socket = try Socket.create()
             try socket?.connect(to: "localhost", port: 8080)
-            
+
             var request = "GET " + toPath + " HTTP/1.1\r\n" +
                 "Host: localhost:8080\r\n" +
                 "Upgrade: websocket\r\n" +
                 "Connection: Upgrade\r\n"
-            
+
             if let protocolVersion = forProtocolVersion {
                 request += "Sec-WebSocket-Version: " + protocolVersion + "\r\n"
             }
             if let key = usingKey {
                 request += "Sec-WebSocket-Key: " + key + "\r\n"
             }
-            
+
             request += "\r\n"
-            
+
             guard let data = request.data(using: .utf8) else { return nil }
-            
+
             try socket?.write(from: data)
         }
         catch let error {
@@ -137,23 +135,23 @@ class KituraTest: XCTestCase {
         }
         return socket
     }
-    
+
     func processUpgradeResponse(socket: Socket) -> (ClientResponse?, NSMutableData?) {
         let response = ClientResponse()
         var unparsedData: NSMutableData?
         var errorFlag = false
-        
+
         var keepProcessing = true
         let buffer = NSMutableData()
-        
+
         do {
             while keepProcessing {
                 buffer.length = 0
                 let count = try socket.read(into: buffer)
-                
+
                 if count != 0 {
                     let parserStatus = response.parse(buffer, from: 0)
-                    
+
                     if parserStatus.state == .messageComplete {
                         keepProcessing = false
                         if parserStatus.bytesLeft != 0 {
@@ -174,18 +172,18 @@ class KituraTest: XCTestCase {
         }
         return (errorFlag ? nil : response, unparsedData)
     }
-    
+
     func checkUpgradeResponse(from: Socket, forKey: String) -> NSMutableData {
         let (rawResponse, extraData) = self.processUpgradeResponse(socket: from)
         let buffer = extraData ?? NSMutableData()
-        
+
         guard let response = rawResponse else {
             XCTFail("Failed to get a response from the upgrade request")
             return buffer
         }
-        
+
         XCTAssertEqual(response.httpStatusCode, HTTPStatusCode.switchingProtocols, "Returned status code on upgrade request was \(response.httpStatusCode) and not \(HTTPStatusCode.switchingProtocols)")
-        
+
         if response.httpStatusCode != HTTPStatusCode.switchingProtocols {
             do {
                 let body = try response.readString()
@@ -195,56 +193,56 @@ class KituraTest: XCTestCase {
                 Log.error("Failed to read the error message from the failed upgrade")
             }
         }
-        
+
         guard let secWebAccept = response.headers["Sec-WebSocket-Accept"] else {
             XCTFail("Sec-WebSocket-Accept is missing in the upgrade response")
             return buffer
         }
-        
+
         let sha1 = Digest(using: .sha1)
         let sha1Bytes = sha1.update(string: forKey + wsGUID)!.final()
         let sha1Data = NSData(bytes: sha1Bytes, length: sha1Bytes.count)
         let secWebAcceptExpected = sha1Data.base64EncodedString(options: .lineLength64Characters)
-        
+
         XCTAssertEqual(secWebAccept[0], secWebAcceptExpected,
                        "The Sec-WebSocket-Accept header value was [\(secWebAccept[0])] and not the expected value of [\(secWebAcceptExpected)]")
-        
+
         return buffer
     }
-    
+
     func checkUpgradeFailureResponse(from: Socket, expectedMessage: String, expectation: XCTestExpectation) {
         let (rawResponse, _) = self.processUpgradeResponse(socket: from)
-        
+
         guard let response = rawResponse else {
             XCTFail("Failed to get a response from the upgrade request")
             return
         }
-        
+
         XCTAssertEqual(response.httpStatusCode, HTTPStatusCode.badRequest, "Returned status code on upgrade request was \(response.httpStatusCode) and not \(HTTPStatusCode.badRequest)")
-        
+
         do {
             let body = try response.readString()
             XCTAssertEqual(body, expectedMessage, "The received error message [\(String(describing: body))] was not equal to the expected one [\(expectedMessage)]")
-            
+
             expectation.fulfill()
         }
         catch {
             XCTFail("Failed to read the error message from the failed upgrade")
         }
     }
-    
+
     func checkCloseReasonCode(payload: NSData, expectedReasonCode: WebSocketCloseReasonCode) {
         XCTAssertEqual(payload.length, MemoryLayout<UInt16>.stride, "The payload wasn't \(MemoryLayout<UInt16>.stride) bytes long. It was \(payload.length) bytes long")
-        
+
         let reasonCode: UInt16
         let networkOrderedUInt16 = UnsafeRawPointer(payload.bytes).assumingMemoryBound(to: UInt16.self)[0]
-        
+
         #if os(Linux)
             reasonCode = Glibc.ntohs(networkOrderedUInt16)
         #else
             reasonCode = CFSwapInt16BigToHost(networkOrderedUInt16)
         #endif
-        
+
         XCTAssertEqual(reasonCode, UInt16(expectedReasonCode.code()), "The close reason code wasn't \(expectedReasonCode) - [\(expectedReasonCode.code())] it was \(reasonCode)")
     }
 
@@ -252,4 +250,3 @@ class KituraTest: XCTestCase {
         return self.expectation(description: "\(type(of: self)):\(line)[\(index)]")
     }
 }
-
